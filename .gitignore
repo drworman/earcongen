@@ -1,0 +1,9 @@
+audio/
+*.wav
+*.ogg
+*.flac
+family.json
+__pycache__/
+*.py[cod]
+.venv/
+venv/
