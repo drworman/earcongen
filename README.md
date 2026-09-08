@@ -47,7 +47,7 @@ afternoon until the set feels right.
 ## Install
 
 ```bash
-git clone <your-remote>/earcongen.git
+git clone https://github.com/drworman/earcongen.git
 cd earcongen
 pip install numpy          # the only dependency
 ./earcongen.py --notes     # the design reasoning, condensed
