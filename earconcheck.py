@@ -30,6 +30,12 @@ Note that this check reports beat-induced zero crossings between
 overlapping partials as mild drops. Anything below about 6x is normally
 that rather than a defect; confirm by looking at the sample neighbourhood
 with --verbose before chasing it.
+
+Ring-modulated and heavily warbled cues -- anything from the droid voices
+-- push envelope nulls much closer to that limit as a matter of course,
+because a ring modulator drives the signal through zero at the difference
+frequency by design. Use --modulated on those, which raises the limit to
+a level that still catches genuine truncation clicks.
 """
 
 from __future__ import annotations
@@ -122,11 +128,16 @@ def main() -> int:
     p.add_argument("files", nargs="+", type=Path)
     p.add_argument("--drop-limit", type=float, default=6.0,
                    help="flag envelope drops steeper than this ratio per ms")
+    p.add_argument("--modulated", action="store_true",
+                   help="loosen --drop-limit for ring-modulated or warbled "
+                        "cues, whose envelope nulls are by design")
     p.add_argument("--floor", type=float, default=0.002,
                    help="ignore drops starting below this amplitude")
     p.add_argument("--verbose", action="store_true",
                    help="print the sample neighbourhood at the worst drop")
     args = p.parse_args()
+    if args.modulated and "--drop-limit" not in sys.argv:
+        args.drop_limit = 12.0
 
     rows = []
     for f in args.files:
@@ -143,7 +154,7 @@ def main() -> int:
           f"{'drop':>8} {'at':>7} {'tail':>7} {'clip':>5}")
     for r in rows:
         flag = "  FAIL" if r["fail"] else ""
-        print(f"{str(r['path']):<{name_w}} {r['dur']:6.3f} {r['peak']:6.3f} "
+        print(f"{r['path']!s:<{name_w}} {r['dur']:6.3f} {r['peak']:6.3f} "
               f"{r['arms']:7.4f} {r['worst_drop']:7.1f}x {r['drop_at']:6.3f}s "
               f"{r['tail_peak']:7.5f} {r['clipped']:5d}{flag}")
 
@@ -151,8 +162,14 @@ def main() -> int:
     if len(ok) > 1:
         a = np.array([r["arms"] for r in ok])
         spread = 20 * np.log10(a.max() / max(a.min(), 1e-9))
-        print(f"\nloudness spread across family: {spread:.2f} dB "
-              f"({'consistent' if spread < 1.5 else 'INCONSISTENT -- normalise'})")
+        verdict = "consistent" if spread < 1.5 else "INCONSISTENT"
+        print(f"\nloudness spread across family: {spread:.2f} dB ({verdict})")
+        if spread >= 1.5:
+            # Deliberate per-cue gain shows up here as a defect, and so does
+            # peak limiting on a wide-interval motif. Neither is a bug, so
+            # this says what to check rather than what to do.
+            print("  check for: per-cue gain set on purpose, cues peak-limited "
+                  "below\n  the RMS target, or a genuine normalisation miss")
 
     if args.verbose:
         for r in rows:

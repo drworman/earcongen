@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="earcongen - rise contour">
+<title>earcongen - rise contour</title>
+<g transform="translate(64,64)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+<path d="M-42 14 A 14 14 0 0 1 -14 14" stroke="#1a1a1a" stroke-width="6"/>
+<path d="M-14 -4 A 14 14 0 0 1 14 -4" stroke="#1a1a1a" stroke-width="6"/>
+<path d="M14 -22 A 14 14 0 0 1 42 -22" stroke="#c96442" stroke-width="6"/>
+<circle cx="-28" cy="24" r="6" fill="#1a1a1a"/>
+<circle cx="0" cy="6" r="6" fill="#1a1a1a"/>
+<circle cx="28" cy="-12" r="6" fill="#c96442"/>
+</g>
+</svg>

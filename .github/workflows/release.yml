@@ -1,0 +1,400 @@
+name: Release
+
+# One single-file GUI binary for three operating systems. The LGPL relinking
+# requirement for Qt is satisfied under LGPLv3 section 4(d)(1): the complete
+# application source is public, the build spec lives in packaging/, and PySide6
+# is a pip install away, so anyone can regenerate these binaries against their
+# own build of Qt. The licence texts in licenses/ ship inside every archive.
+#
+# The command-line tools are not frozen. They need numpy alone, and travel
+# inside each archive as source, so the project is usable without the binary.
+
+on:
+  push:
+    # Tags are bare YYYYMMDD datestamps with no "v" prefix, so the filter
+    # matches any tag starting with a digit. The verify job below is what
+    # actually rejects a tag that does not match the version file.
+    tags: ["[0-9]*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build artefacts without publishing a release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  verify:
+    name: Verify tag matches the version file
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Versions are YYYYMMDD datestamps; see CHANGELOG.md.
+      - id: read
+        name: Read and check the version
+        shell: bash
+        run: |
+          VERSION="$(tr -d '[:space:]' < version)"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Version file: ${VERSION}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME}"
+            if [ "${TAG}" != "${VERSION}" ]; then
+              echo "::error::Tag '${TAG}' does not match the version file" \
+                   "('${VERSION}'). Tags are bare datestamps with no 'v'" \
+                   "prefix. Update 'version' or move the tag."
+              exit 1
+            fi
+          fi
+
+  test:
+    name: Tests and audio regression
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Install Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libxkbcommon-x11-0 libxcb-cursor0 \
+            libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-randr0 \
+            libxcb-render-util0 libxcb-xinerama0 xvfb
+
+      - name: Lint
+        run: ruff check .
+
+      # The GUI tests build real widgets, so they need a platform plugin.
+      # offscreen is enough and is faster than xvfb.
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: pytest -q tests
+
+      # Every generated cue is checked for the defects that are easy to
+      # introduce and impossible to hear in a diff. The droid families are
+      # ring-modulated, whose envelope nulls are deliberate, so they are
+      # checked with the looser limit.
+      - name: Generate and check every family
+        run: |
+          set -euo pipefail
+          for family in core ui system message progress; do
+            python earcongen.py --family "$family" --out "audio/$family"
+          done
+          python earcongen.py --r2 --out audio/r2
+          python earcongen.py --r2-full --out audio/r2-full
+          python earconcheck.py audio/core/*.wav audio/ui/*.wav \
+            audio/system/*.wav audio/message/*.wav audio/progress/*.wav
+          python earconcheck.py --modulated audio/r2/*.wav audio/r2-full/*.wav
+
+  build:
+    name: Build (${{ matrix.os }})
+    needs: [verify, test]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            platform: linux-x86_64
+          - os: windows-latest
+            platform: windows-x86_64
+          - os: macos-latest
+            platform: macos-arm64
+
+    # Job-level environment. The signing secrets are declared here, not
+    # inside the steps that use them: a step's own `env:` block is not
+    # available to that step's `if:`, which GitHub evaluates first, so a
+    # step-level reference makes the condition always false and signing
+    # skips silently on a correctly configured repository. That failure is
+    # invisible — the build succeeds and ships unsigned.
+    env:
+      BINARY: EarconGen
+      WINDOWS_CERT: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+      WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+      MACOS_CERT: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+      MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+      MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Install Qt runtime libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libxkbcommon-x11-0 libxcb-cursor0 \
+            libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-randr0 \
+            libxcb-render-util0 libxcb-xinerama0
+
+      - name: Build single-file binary
+        run: pyinstaller packaging/earcongen.spec --noconfirm --clean
+
+      # ----------------------------------------------------------------- #
+      # Code signing. The secrets come from the job-level env block above;
+      # see the note there for why. Every step is skipped when its secret
+      # is absent, so forks build successfully with no credentials
+      # configured at all.
+      # ----------------------------------------------------------------- #
+
+      - name: Sign Windows binary
+        if: runner.os == 'Windows' && env.WINDOWS_CERT != ''
+        shell: pwsh
+        run: |
+          $bytes = [Convert]::FromBase64String($env:WINDOWS_CERT)
+          $path = Join-Path $env:RUNNER_TEMP "earcongen-signing.pfx"
+          [IO.File]::WriteAllBytes($path, $bytes)
+          $signtool = Get-ChildItem `
+            "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/signtool.exe" |
+            Select-Object -Last 1
+          & $signtool.FullName sign /f $path /p $env:WINDOWS_CERT_PASSWORD `
+            /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+            "dist/$env:BINARY.exe"
+          & $signtool.FullName verify /pa "dist/$env:BINARY.exe"
+          Remove-Item $path -Force
+
+      - name: Sign and notarise macOS app
+        if: runner.os == 'macOS' && env.MACOS_CERT != ''
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/earcongen.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$MACOS_CERT" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychain -d user -s "$KEYCHAIN" login.keychain-db
+
+          # Hardened runtime is required for notarisation. Qt loads its
+          # plugins at runtime, so the JIT and unsigned-memory entitlements
+          # must be granted or the app is killed on launch.
+          codesign --force --deep --options runtime --timestamp \
+            --entitlements packaging/entitlements.plist \
+            --sign "$MACOS_SIGN_IDENTITY" "dist/${BINARY}.app"
+          codesign --verify --deep --strict --verbose=2 "dist/${BINARY}.app"
+
+          ditto -c -k --keepParent "dist/${BINARY}.app" \
+            "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --apple-id "$MACOS_NOTARY_APPLE_ID" \
+            --password "$MACOS_NOTARY_PASSWORD" \
+            --team-id "$MACOS_NOTARY_TEAM_ID" --wait
+          xcrun stapler staple "dist/${BINARY}.app"
+
+          security delete-keychain "$KEYCHAIN"
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/notarize.zip"
+
+      # ----------------------------------------------------------------- #
+      # Smoke test: prove the artefact actually starts. A binary that
+      # builds but cannot import its own modules is the failure mode this
+      # catches, and it is easy to ship without this step.
+      #
+      # --cli version never imports Qt, so no display is needed anywhere.
+      # ----------------------------------------------------------------- #
+
+      - name: Smoke-test the binary (Linux and macOS)
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          chmod +x "dist/${BINARY}"
+          ACTUAL="$("dist/${BINARY}" --cli version)"
+          EXPECTED="${{ needs.verify.outputs.version }}"
+          echo "reported: '$ACTUAL' / expected: '$EXPECTED'"
+          test -n "$ACTUAL" || { echo "::error::No output from the binary."; exit 1; }
+          test "$ACTUAL" = "$EXPECTED"
+
+      # The Windows binary is built windowed, so it starts with no console.
+      # gui/win_console.py reattaches stdout for --cli; this step is what
+      # proves it still works.
+      #
+      # Two ways of capturing are tried before giving up. Piping is the
+      # normal path, but it depends on the console attachment behaving, and
+      # that is the part that cannot be tested off Windows. Falling back to
+      # a redirect to a file exercises the inherited-handle path instead,
+      # so a regression in one does not block a release on the other.
+      - name: Smoke-test the binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $expected = "${{ needs.verify.outputs.version }}"
+          $exe = "dist/$env:BINARY.exe"
+
+          $actual = (& $exe --cli version 2>&1 | Out-String).Trim()
+          $exit = $LASTEXITCODE
+          Write-Host "pipe capture : '$actual' (exit $exit)"
+
+          if ([string]::IsNullOrWhiteSpace($actual)) {
+            Write-Host "Pipe capture was empty; retrying with a file redirect."
+            $tmp = Join-Path $env:RUNNER_TEMP "earcongen-version.txt"
+            & $exe --cli version > $tmp 2>&1
+            $exit = $LASTEXITCODE
+            $actual = (Get-Content $tmp -Raw).Trim()
+            Write-Host "file capture : '$actual' (exit $exit)"
+          }
+
+          if ($exit -ne 0) {
+            throw "Binary exited with code $exit."
+          }
+          if ([string]::IsNullOrWhiteSpace($actual)) {
+            throw ("The binary produced no output by either method. A " +
+                   "windowed Windows build cannot write to stdout unless " +
+                   "it attaches to the parent console or picks up an " +
+                   "inherited handle - check enable_console_output() in " +
+                   "gui/win_console.py.")
+          }
+          if ($actual -ne $expected) {
+            throw "Version mismatch: got '$actual', expected '$expected'."
+          }
+          Write-Host "OK"
+
+      # A tagged run produces the archives that become release assets. A
+      # manual run does not: GitHub always zips whatever an artefact step
+      # uploads, so building a tar.gz first hands Linux users a tarball
+      # inside a zip for no reason. Uploading the files loose makes
+      # GitHub's own zip the archive.
+      - name: Package artefacts
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.verify.outputs.version }}"
+          STEM="${BINARY}-${VERSION}-${{ matrix.platform }}"
+
+          # Every archive carries the licence texts — LGPLv3 section 4(b)
+          # requires a copy to accompany the binary, and a link is not
+          # enough — and the two command-line tools, which need numpy alone
+          # and are the rest of the project.
+          EXTRAS="LICENSE THIRD-PARTY-NOTICES.md README.md USAGE.md \
+                  CHANGELOG.md earcongen.py earconcheck.py licenses"
+
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            7z a "dist/${STEM}.zip" "./dist/${BINARY}.exe" ${EXTRAS// /' ./'}
+          elif [ "${RUNNER_OS}" = "macOS" ]; then
+            ditto -c -k --keepParent "dist/${BINARY}.app" \
+              "dist/${STEM}.zip" 2>/dev/null || \
+              tar -czf "dist/${STEM}.tar.gz" -C dist "${BINARY}" -C .. ${EXTRAS}
+          else
+            tar -czf "dist/${STEM}.tar.gz" -C dist "${BINARY}" -C .. ${EXTRAS}
+          fi
+
+          cd dist
+          for f in "${STEM}".*; do
+            if command -v sha256sum >/dev/null; then
+              sha256sum "$f" >> "SHA256SUMS-${STEM}.txt"
+            else
+              shasum -a 256 "$f" >> "SHA256SUMS-${STEM}.txt"
+            fi
+          done
+          ls -la
+
+      - name: Collect artefacts (manual run)
+        if: github.ref_type != 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp LICENSE THIRD-PARTY-NOTICES.md dist/
+          cp -R licenses dist/
+          ls -la dist
+
+      # A tagged run publishes the archive and its checksum only. dist/
+      # still holds the loose binary the archive was built from, and
+      # uploading that too would double the transfer and put a copy with
+      # no licence texts beside it into the release.
+      - uses: actions/upload-artifact@v4
+        if: github.ref_type == 'tag'
+        with:
+          name: EarconGen-${{ matrix.platform }}
+          path: |
+            dist/EarconGen-${{ needs.verify.outputs.version }}-*
+            dist/SHA256SUMS-*.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        if: github.ref_type != 'tag'
+        with:
+          name: EarconGen-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish release
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    if: github.ref_type == 'tag' && !inputs.dry_run
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Collect checksums
+        run: |
+          cd artifacts
+          cat SHA256SUMS-*.txt > SHA256SUMS.txt || true
+          rm -f SHA256SUMS-*.txt
+          ls -la
+
+      - name: Extract release notes from the changelog
+        id: notes
+        run: |
+          VERSION="${{ needs.verify.outputs.version }}"
+          # Pull the section for this version out of CHANGELOG.md.
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { flag = 1; next }
+            flag && /^## \[/ { exit }
+            flag { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "No changelog entry found for ${VERSION}." > release-notes.md
+          fi
+          cat release-notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          body_path: release-notes.md
+          draft: false
+          # A suffix such as 20260908-rc1 marks a prerelease; a bare
+          # datestamp is a full release.
+          prerelease: ${{ contains(needs.verify.outputs.version, '-') }}
+          fail_on_unmatched_files: true

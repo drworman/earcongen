@@ -1,0 +1,6 @@
+-r requirements-gui.txt
+
+pytest>=8.0
+ruff>=0.6
+pyinstaller>=6.6         # GPL-2.0 with a bootloader exception permitting
+                         # distribution of works under any licence

@@ -11,7 +11,10 @@ defaults are what they are, see [README.md](README.md).
 - [earcongen.py reference](#earcongenpy-reference)
 - [Recipes](#recipes)
 - [The spec file](#the-spec-file)
+- [Voice modulation](#voice-modulation)
+- [Extending: shortening behaviour](#extending-shortening-behaviour)
 - [Extending: voices, scales, contours](#extending-voices-scales-contours)
+- [earcongui.py reference](#earconguipy-reference)
 - [earconcheck.py reference](#earconcheckpy-reference)
 - [Integrating a theme into an application](#integrating-a-theme-into-an-application)
 - [Troubleshooting](#troubleshooting)
@@ -62,7 +65,9 @@ the script or supply your own with `--spec`.
 | `--play` | off | audition each file after writing it |
 
 Files are named from each spec's `slug`, so the default family writes
-`earcon01.wav` … `earcon08.wav`.
+`earcon01.wav` … `earcon08.wav`. Other families use namespaced slugs
+(`ui_open.wav`, `sys_boot.wav`), so several themes can share one output
+directory without colliding.
 
 `--play` uses whatever it can find: `afplay` on macOS, `winsound` on
 Windows, then `paplay` / `aplay` / `ffplay` on Linux. If none is present
@@ -73,12 +78,54 @@ it says so and carries on writing files.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--voice NAME` | `chime` | timbre; see `--list-voices` |
+| `--family NAME` | `core` | which set of cues to generate; see `--list-families` |
+| `-n`, `--note-count N` | unset | cap every motif at N notes |
+| `--cap-mode MODE` | `redesign` | how `-n` shortens: `redesign` or `truncate` |
 | `--scale NAME` | `major_pent` | pitch set; see below |
 | `--root HZ` | `523.25` | reference pitch (C5) |
 | `--floor HZ` | `480.0` | lowest permitted fundamental |
 | `--ceiling HZ` | `1150.0` | highest permitted fundamental |
 
-Scales: `major_pent`, `minor_pent`, `hirajoshi`, `kumoi`, `whole_tone`.
+Families: `core`, `ui`, `system`, `message`, `progress`, `droid`,
+`droid_full`, `all`. `core` is the original eight and its output is
+unchanged. `all` concatenates every non-droid cue for auditioning and is
+not a set to ship.
+
+`--cap-mode redesign` (the default) substitutes a purpose-built shape of
+the requested length from the `REDUCTIONS` table, preserving what each
+contour means, then separates any cues that still collide by moving them
+into a different register, in the direction their character implies.
+
+`--cap-mode truncate` cuts each contour short instead. Openings survive
+exactly; cues that differ only after the cut point do not. The casualties
+are named on stderr and generation continues:
+
+```
+$ ./earcongen.py -n 1 --cap-mode truncate
+  warning: -n 1 makes these identical: earcon01, earcon02  (--cap-mode redesign separates them)
+```
+
+Both modes report on the pitches that actually come out rather than on
+scale degrees, which matters more than it sounds: `fit_to_range` folds
+every motif into the band by whole octaves, so two cues five degrees apart
+on a pentatonic are the *same frequency*. Comparing degrees would call
+them separated and be wrong.
+
+That folding also sets a hard ceiling on one-note families. The default
+band holds six distinguishable pitches, so an eight-cue family cannot
+survive `-n 1` however it is arranged. The tool reports the shortfall and
+the figure rather than quietly writing duplicates; widen the band, raise
+the cap, or ship fewer cues.
+
+Per-cue overrides live in the spec file as `note_count`, which wins over
+the flag.
+
+Scales: `major_pent`, `minor_pent`, `hirajoshi`, `kumoi`, `whole_tone`,
+`chromatic`.
+
+`chromatic` deliberately discards the guarantee that any two
+simultaneously-sounding cues are consonant. It exists for `--r2-full`,
+where speech-like arbitrariness is the point.
 
 `minor_pent` reads as more serious than `major_pent` without being
 mournful. `hirajoshi` is distinctly ceremonial. `whole_tone` is
@@ -94,6 +141,9 @@ want cues to feel neutral rather than cheerful.
 | `--tail-ms MS` | `250.0` | ring-out appended after the last onset |
 | `--attack-ms MS` | voice's own | override attack time |
 | `--decay-ms MS` | voice's own | override decay time |
+| `--glide-ms MS` | voice default | portamento between notes |
+| `--ring-depth 0-1` | voice default | ring modulation wet mix |
+| `--vib-cents N` | voice default | warble depth |
 | `--release-ms MS` | `60.0` | raised-cosine release at end of file |
 
 `--note-ms` sets the **decay time**, not a truncation point. Notes always
@@ -131,10 +181,20 @@ audio downstream. Generating at 0.99 leaves nothing for the host.
 | Flag | Meaning |
 |---|---|
 | `--list-voices` | voices with their attack/decay and character |
-| `--list-contours` | contour names and their degree offsets |
-| `--dump-spec` | print the default family as JSON |
+| `--list-contours` | contour names, lengths, and degree offsets |
+| `--list-families` | every family with its cues, contours, and labels |
+| `--list-presets` | presets and the options each sets |
+| `--dump-spec` | print the selected family as JSON (honours `--family`) |
 | `--notes` | the design reasoning, condensed |
 | `--spec FILE` | use a family definition from JSON |
+| `--preset NAME` | apply a named bundle of options |
+| `--r2`, `--r2-full` | shorthand for the astromech presets |
+
+A preset only sets options you did not set yourself, so `--r2 --voice
+marimba` keeps the droid phrasing and takes the marimba timbre. This is
+decided by inspecting the command line, not by comparing values, so
+setting a flag to what happens to be its default still counts as setting
+it.
 
 ---
 
@@ -156,11 +216,31 @@ audio downstream. Generating at 0.99 leaves nothing for the host.
 # Deliberately gentle: slow attack is the whole trick.
 ./earcongen.py --voice glass --attack-ms 45 --gap-ms 260
 
+# A UI set: dense, quiet, low ceremony. These fire many times an hour.
+./earcongen.py --family ui --voice marimba --note-ms 190 --gap-ms 120
+
+# A system set: rare events, so they can afford weight.
+./earcongen.py --family system --voice bell --gap-ms 220 --tail-ms 400
+
+# Terser without losing contour. Two notes still carry rise vs fall.
+./earcongen.py -n 2 --gap-ms 110 --tail-ms 160
+
+# Droid phrasing with a wooden timbre — presets yield to explicit flags.
+./earcongen.py --r2 --voice marimba --out audio/r2-wood
+
+# Unleashed, but pulled back out of the shrillest part of the band.
+./earcongen.py --r2-full --ceiling 2000 --out audio/r2-tamer
+
 # Generate every voice into its own theme directory for A/B comparison.
-for v in chime bell marimba glass pluck alert; do
+for v in chime bell marimba glass pluck alert droid; do
     ./earcongen.py --voice "$v" --out "audio/$v"
 done
 ./earconcheck.py audio/*/*.wav
+
+# Every family in one timbre, to hear whether the catalogue hangs together.
+for f in core ui system message progress; do
+    ./earcongen.py --family "$f" --voice chime --out "audio/$f"
+done
 ```
 
 Useful reference pitches for `--root`: G4 392.00, A4 440.00, C5 523.25,
@@ -196,6 +276,7 @@ D5 587.33, E5 659.25, G5 783.99.
 | `note_ms` | per-cue decay override; `null` uses the family default |
 | `gap_ms` | per-cue spacing override; `null` uses the family default |
 | `gain` | relative loudness within the family |
+| `note_count` | per-cue note cap; `null` uses `--note-count` |
 | `label` | documentation only; printed while generating |
 
 Design guidance for building a family:
@@ -221,6 +302,55 @@ urgent cue stops being urgent as soon as a second cue sounds equally
 urgent.
 
 ---
+
+## Voice modulation
+
+Five fields drive the droid character and are available to any voice. All
+default to zero, so every voice that predates them is bit-for-bit
+unchanged — a constant-pitch note still takes the closed-form phase path,
+and only modulating voices pay for phase integration.
+
+| Field | Effect |
+|---|---|
+| `glide_ms` | portamento into each note from the previous pitch |
+| `sweep_cents` | per-note bend across the note's own decay time |
+| `vib_hz`, `vib_cents` | warble rate and depth |
+| `ring_ratio`, `ring_depth` | ring modulator frequency ratio and wet mix |
+| `noise_amt` | servo/breath noise under the partials |
+
+A non-integer `ring_ratio` is what makes it read as a machine attempting
+speech: it places sum and difference tones where no harmonic series would
+put them. Above about `0.6` for `ring_depth` it turns harsh. Noise is
+deterministically seeded from the note frequency, so repeat runs are
+identical.
+
+Glides interpolate in log-frequency space, eased with a raised cosine.
+Linear interpolation in Hz sounds like a machine sweeping; this sounds
+like a voice bending, which is the difference worth having.
+
+## Extending: shortening behaviour
+
+Two tables in `earcongen.py` govern what a note cap does. They are
+separate because they do different jobs.
+
+`REDUCTIONS` is authored. It maps a contour name to the shape it becomes
+at each shorter length, and it preserves meaning — it cannot preserve
+distinctness, because distinctness is a property of a family rather than
+of a contour. Adding an entry is one line:
+
+```python
+REDUCTIONS["my_contour"] = {3: [0, 2, 5], 2: [0, 5]}
+```
+
+A missing length falls back to truncation, which is right where the
+opening genuinely is the whole idea. Length 1 is never authored: it is
+always a single note, and register does the work.
+
+`CONTOUR_CHARACTER` says what a contour is *for* — `rise`, `fall`,
+`level`, `updown`, `downup` or `chatter`. It changes nothing about the
+sound and exactly one thing about behaviour: which way a cue moves when
+register separation has to shift it. Every contour must appear in it, and
+a test enforces that, because a missing entry silently means `level`.
 
 ## Extending: voices, scales, contours
 
@@ -275,6 +405,83 @@ simultaneously-sounding cues are consonant.
 
 ---
 
+## earcongui.py reference
+
+The window exposes every generation option in the reference above and adds
+nothing of its own to the audio. Anything it can produce, the command line
+can produce; the difference is how quickly you can hear the result.
+
+```bash
+pip install -r requirements-gui.txt
+./earcongui.py
+./earcongui.py --cli version    # print the datestamp and exit; no Qt loaded
+```
+
+### Preset, Custom, and Start from
+
+| Mode | Controls | Start from |
+|---|---|---|
+| a named preset | filled in and locked | hidden |
+| `Custom` | yours | shown |
+
+Choosing a preset writes its values into every control and disables them.
+It does not hide them, and it resets settings the preset does not mention
+back to their defaults first — otherwise a preset inherits whatever the
+previous experiment left behind and no two runs of it match.
+
+`Custom` re-enables everything and reveals **Start from**, which loads a
+preset's values as a baseline. That overwrites every control, so it is a
+starting point rather than a modifier: pick it first, then adjust.
+
+### Controls
+
+Each numeric setting has a slider and a spin box over the same value. The
+slider moves in units of that setting's step, so every notch is a value
+the box can represent exactly. Related settings share a range on purpose:
+the frequency controls all run 100-4000 Hz, the two note-length controls
+both run 40-2000 ms, spacing and ring-out share 0-1200 ms, attack and
+release share 0-300 ms. The spin box reaches values the slider cannot hit
+precisely; both are clamped to the same bounds.
+
+Settings whose command-line default is "whatever the voice does" —
+`--note-ms`, `--attack-ms`, `--decay-ms`, `--glide-ms`, `--ring-depth`,
+`--vib-cents` — carry a checkbox. Unticked, the voice decides.
+
+Every control and every part of it carries a tooltip explaining what the
+setting does and why the default is what it is.
+
+### Destination
+
+Files are written to a subfolder inside a base directory. The subfolder
+follows the preset or voice name until you type your own, after which it
+is left alone. Only the final component of what you type is used, so a
+path with separators in it cannot escape the base directory.
+
+Defaults, per platform:
+
+| | Base output | Settings |
+|---|---|---|
+| Linux | `$XDG_DOCUMENTS_DIR`, else `~/Documents` or `~/Music` | `$XDG_CONFIG_HOME/earcongen` |
+| macOS | `~/Documents/earcongen` | `~/Library/Application Support/earcongen` |
+| Windows | `%USERPROFILE%\Documents\earcongen` | `%APPDATA%\earcongen` |
+
+A file named `earcongen-portable.txt` beside the binary overrides both,
+keeping settings and output next to the executable.
+
+### Playback
+
+Select a row to hear it, or double-click. QtMultimedia is used where it
+reports a working backend; otherwise the window shells out to `afplay`,
+`paplay`, `pw-play`, `aplay` or `ffplay`, or uses `winsound` on Windows.
+The status bar names whichever is in use. A machine with a working
+`paplay` and no Qt audio plugin is a real configuration, which is why the
+fallback exists rather than an error message.
+
+Rendering happens on a worker thread. Progress is per cue and a run can be
+cancelled between files; anything already written is kept.
+
+---
+
 ## earconcheck.py reference
 
 ```bash
@@ -285,6 +492,7 @@ simultaneously-sounding cues are consonant.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--drop-limit X` | `6.0` | flag envelope drops steeper than this ratio per ms |
+| `--modulated` | off | raise `--drop-limit` to 12.0 for ring-modulated cues |
 | `--floor X` | `0.002` | ignore drops starting below this amplitude |
 | `--verbose` | off | print the sample neighbourhood at the worst drop |
 

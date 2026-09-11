@@ -7,3 +7,17 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# Build artefacts
+build/
+dist/
+*.spec.bak
+
+# Packaging inputs that are not committed; see packaging/icons/README.md
+packaging/icons/*.ico
+packaging/icons/*.icns
+packaging/icons/*.iconset/
+
+# Test and tooling caches
+.pytest_cache/
+.ruff_cache/

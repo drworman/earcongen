@@ -1,1 +1,6 @@
-numpy>=1.24
+# Runtime dependency for the command-line tools.
+#
+# earcongen.py and earconcheck.py need this and nothing else. Keeping that
+# true is deliberate: the scripts are meant to be readable, copyable and
+# runnable anywhere Python is, without a virtualenv ceremony.
+numpy>=1.24            # synthesis and analysis — BSD-3-Clause

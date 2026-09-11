@@ -1,0 +1,32 @@
+# Lint configuration.
+#
+# The workflow runs `ruff check .` before it builds anything, so this file
+# is what decides whether a release can start. It is deliberately modest:
+# correctness rules on, style opinions off, because the code here is
+# written to be read and reformatting it to a linter's taste would work
+# against that.
+
+line-length = 100
+target-version = "py310"
+
+[lint]
+select = ["E", "F", "W", "B", "UP", "RUF"]
+ignore = [
+    # Cast-to-int on a value ruff can prove is already an int. The casts
+    # are there because the value is int-typed only in one branch, and
+    # removing them makes the invariant invisible to a reader.
+    "RUF046",
+    # `command + [path]` reads better than `[*command, path]` when the
+    # left side is a command and the right side is its argument.
+    "RUF005",
+]
+
+[lint.per-file-ignores]
+# Entry points put the repository root on sys.path before importing from
+# it, which necessarily happens after the imports at the top.
+"earcongui.py" = ["E402"]
+"tests/*" = ["E402"]
+# A PyInstaller spec is executed with names injected into its namespace by
+# PyInstaller itself, so Analysis, PYZ, EXE and BUNDLE are legitimately
+# undefined here.
+"packaging/*.spec" = ["F821", "E402"]

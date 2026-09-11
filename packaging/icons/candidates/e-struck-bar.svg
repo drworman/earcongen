@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="earcongen - struck bar">
+<title>earcongen - struck bar</title>
+<g transform="translate(64,64)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+<path d="M-16 24 A 16 16 0 0 1 16 24" stroke="#c96442" stroke-width="6"/>
+<path d="M-30 24 A 30 30 0 0 1 30 24" stroke="#1a1a1a" stroke-width="6"/>
+<path d="M-44 24 A 44 44 0 0 1 44 24" stroke="#1a1a1a" stroke-width="6"/>
+<rect x="-38" y="26" width="76" height="13" rx="6" fill="#1a1a1a"/>
+</g>
+</svg>
